@@ -1,7 +1,8 @@
-/// Changelog: 
+/// Changelog:
 /// - use Bytes instead of Vec<u8>
 /// - use bounded channels instead of unbounded
-
+/// - make MTU variable
+///
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -11,7 +12,7 @@ use smoltcp::{
     phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
     time::Instant,
 };
-use tokio::sync::mpsc::{channel, Permit, Sender, Receiver};
+use tokio::sync::mpsc::{channel, Permit, Receiver, Sender};
 use tokio_util::bytes::{Bytes, BytesMut};
 
 use crate::packet::AnyIpPktFrame;
@@ -20,11 +21,13 @@ pub(super) struct VirtualDevice {
     in_buf_avail: Arc<AtomicBool>,
     in_buf: Receiver<Bytes>,
     out_buf: Sender<AnyIpPktFrame>,
+    max_transmission_unit: usize,
 }
 
 impl VirtualDevice {
     pub(super) fn new(
         iface_egress_tx: Sender<AnyIpPktFrame>,
+        max_transmission_unit: usize,
     ) -> (Self, Sender<Bytes>, Arc<AtomicBool>) {
         let iface_ingress_tx_avail = Arc::new(AtomicBool::new(false));
         let (iface_ingress_tx, iface_ingress_rx) = channel(1024);
@@ -33,6 +36,7 @@ impl VirtualDevice {
                 in_buf_avail: iface_ingress_tx_avail.clone(),
                 in_buf: iface_ingress_rx,
                 out_buf: iface_egress_tx,
+                max_transmission_unit,
             },
             iface_ingress_tx,
             iface_ingress_tx_avail,
@@ -68,7 +72,7 @@ impl Device for VirtualDevice {
     fn capabilities(&self) -> DeviceCapabilities {
         let mut capabilities = DeviceCapabilities::default();
         capabilities.medium = Medium::Ip;
-        capabilities.max_transmission_unit = 1504;
+        capabilities.max_transmission_unit = self.max_transmission_unit;
         capabilities
     }
 }

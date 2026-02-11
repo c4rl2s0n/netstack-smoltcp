@@ -1,7 +1,8 @@
-/// Changelog: 
+/// Changelog:
 /// - use Bytes instead of Vec<u8>
 /// - use bounded channels instead of unbounded
-
+/// - make MTU variable
+///
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -369,8 +370,10 @@ impl TcpListener {
     pub(super) fn new(
         tcp_rx: Receiver<AnyIpPktFrame>,
         stack_tx: Sender<AnyIpPktFrame>,
+        max_transmission_unit: usize,
     ) -> std::io::Result<(Runner, Self)> {
-        let (mut device, iface_ingress_tx, iface_ingress_tx_avail) = VirtualDevice::new(stack_tx);
+        let (mut device, iface_ingress_tx, iface_ingress_tx_avail) =
+            VirtualDevice::new(stack_tx, max_transmission_unit);
         let iface = Self::create_interface(&mut device)?;
 
         let (stream_tx, stream_rx) = channel(1024);

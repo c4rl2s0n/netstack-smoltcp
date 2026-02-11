@@ -1,7 +1,8 @@
-/// Changelog: 
+/// Changelog:
 /// - use Bytes instead of Vec<u8>
 /// - use bounded channels instead of unbounded
-
+/// - make MTU variable
+///
 use std::{
     net::IpAddr,
     pin::Pin,
@@ -28,6 +29,7 @@ pub struct StackBuilder {
     stack_buffer_size: usize,
     udp_buffer_size: usize,
     tcp_buffer_size: usize,
+    max_transmission_unit: usize,
     ip_filters: IpFilters<'static>,
 }
 
@@ -40,6 +42,7 @@ impl Default for StackBuilder {
             stack_buffer_size: 1024,
             udp_buffer_size: 512,
             tcp_buffer_size: 512,
+            max_transmission_unit: 1504,
             ip_filters: IpFilters::with_non_broadcast(),
         }
     }
@@ -74,6 +77,11 @@ impl StackBuilder {
 
     pub fn tcp_buffer_size(mut self, size: usize) -> Self {
         self.tcp_buffer_size = size;
+        self
+    }
+
+    pub fn max_transmission_unit(mut self, size: usize) -> Self {
+        self.max_transmission_unit = size;
         self
     }
 
@@ -135,7 +143,8 @@ impl StackBuilder {
         let udp_socket = udp_rx.map(|udp_rx| UdpSocket::new(udp_rx, stack_tx.clone()));
 
         let (tcp_runner, tcp_listener) = if let Some(tcp_rx) = tcp_rx {
-            let (tcp_runner, tcp_listener) = TcpListener::new(tcp_rx, stack_tx)?;
+            let (tcp_runner, tcp_listener) =
+                TcpListener::new(tcp_rx, stack_tx, self.max_transmission_unit)?;
             (Some(tcp_runner), Some(tcp_listener))
         } else {
             (None, None)
