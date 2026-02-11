@@ -1,3 +1,7 @@
+/// Changelog: 
+/// - use Bytes instead of Vec<u8>
+
+
 use std::net::IpAddr;
 
 use smoltcp::wire::{IpProtocol, IpVersion, Ipv4Packet, Ipv6Packet};

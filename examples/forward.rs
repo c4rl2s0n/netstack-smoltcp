@@ -1,3 +1,6 @@
+/// Changelog: 
+/// - Added TunBytesCodec to make the example compatible with introduced changes (Vec<u8> to Bytes)
+
 use std::{io, net::{IpAddr, SocketAddr}};
 
 use futures::{SinkExt, StreamExt};

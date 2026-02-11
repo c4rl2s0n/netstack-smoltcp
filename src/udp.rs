@@ -1,3 +1,6 @@
+/// Changelog: 
+/// - use Bytes instead of Vec<u8>
+
 use std::{
     net::SocketAddr,
     pin::Pin,
@@ -153,7 +156,7 @@ impl Sink<UdpMsg> for WriteHalf {
 
         match this
             .stack_tx
-            .start_send_unpin(packet_to_send)//ip_packet_writer.into_inner().freeze())
+            .start_send_unpin(packet_to_send)
         {
             Ok(()) => Ok(()),
             Err(err) => Err(Error::other(format!("send error: {err}"))),

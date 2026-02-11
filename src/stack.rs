@@ -1,3 +1,7 @@
+/// Changelog: 
+/// - use Bytes instead of Vec<u8>
+/// - use bounded channels instead of unbounded
+
 use std::{
     net::IpAddr,
     pin::Pin,
