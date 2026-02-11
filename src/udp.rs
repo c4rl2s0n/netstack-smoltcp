@@ -8,13 +8,16 @@ use etherparse::PacketBuilder;
 use futures::{ready, Sink, SinkExt, Stream};
 use smoltcp::wire::UdpPacket;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio_util::sync::PollSender;
+use tokio_util::{
+    bytes::{BufMut, Bytes, BytesMut},
+    sync::PollSender,
+};
 use tracing::{error, trace};
 
 use crate::packet::{AnyIpPktFrame, IpPacket};
 
 pub type UdpMsg = (
-    Vec<u8>,    /* payload */
+    Bytes,      /* payload */
     SocketAddr, /* local */
     SocketAddr, /* remote */
 );
@@ -39,6 +42,7 @@ impl UdpSocket {
             },
             WriteHalf {
                 stack_tx: self.stack_tx,
+                scratch_buffer: BytesMut::new(),
             },
         )
     }
@@ -50,6 +54,7 @@ pub struct ReadHalf {
 
 pub struct WriteHalf {
     stack_tx: PollSender<AnyIpPktFrame>,
+    scratch_buffer: BytesMut,
 }
 
 impl Stream for ReadHalf {
@@ -58,7 +63,7 @@ impl Stream for ReadHalf {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         self.udp_rx.poll_recv(cx).map(|item| {
             item.and_then(|frame| {
-                let packet = match IpPacket::new_checked(frame.as_slice()) {
+                let packet = match IpPacket::new_checked(&frame) {
                     Ok(p) => p,
                     Err(err) => {
                         error!("invalid IP packet: {}", err);
@@ -69,8 +74,9 @@ impl Stream for ReadHalf {
                 let src_ip = packet.src_addr();
                 let dst_ip = packet.dst_addr();
                 let payload = packet.payload();
+                let mut payload_offset = packet.header_len();
 
-                let packet = match UdpPacket::new_checked(payload) {
+                let packet: UdpPacket<&[u8]> = match UdpPacket::new_checked(payload) {
                     Ok(p) => p,
                     Err(err) => {
                         error!("invalid err: {err}, src_ip: {src_ip}, dst_ip: {dst_ip}, payload: {payload:?}");
@@ -82,10 +88,12 @@ impl Stream for ReadHalf {
 
                 let src_addr = SocketAddr::new(src_ip, src_port);
                 let dst_addr = SocketAddr::new(dst_ip, dst_port);
+                payload_offset += 8;
 
                 trace!("created UDP socket for {} <-> {}", src_addr, dst_addr);
 
-                Some((packet.payload().to_vec(), src_addr, dst_addr))
+                let payload = frame.slice(payload_offset..payload_offset + packet.payload().len());
+                Some((payload, src_addr, dst_addr))
             })
         })
     }
@@ -101,7 +109,7 @@ impl Sink<UdpMsg> for WriteHalf {
         }
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: UdpMsg) -> Result<(), Self::Error> {
+    fn start_send(self: Pin<&mut Self>, item: UdpMsg) -> Result<(), Self::Error> {
         use std::io::{Error, ErrorKind::InvalidData};
         let (data, src_addr, dst_addr) = item;
 
@@ -123,12 +131,30 @@ impl Sink<UdpMsg> for WriteHalf {
             }
         };
 
-        let mut ip_packet_writer = Vec::with_capacity(builder.size(data.len()));
+        
+        let this = self.get_mut();
+        // Clear the buffer (doesn't deallocate memory)
+        this.scratch_buffer.clear();
+        
+        // Ensure enough capacity (only reallocates if needed)
+        let total_size = builder.size(data.len());
+        if this.scratch_buffer.capacity() < total_size {
+            this.scratch_buffer.reserve(total_size);
+        }
+
+        let mut ip_packet_writer = (&mut this.scratch_buffer).writer();
+
+        //let mut ip_packet_writer = self.scratch_bufferBytesMut::with_capacity(builder.size(data.len())).writer();
         builder
             .write(&mut ip_packet_writer, &data)
             .map_err(|err| Error::other(format!("PacketBuilder::write: {err}")))?;
 
-        match self.stack_tx.start_send_unpin(ip_packet_writer.clone()) {
+        let packet_to_send = this.scratch_buffer.split().freeze();
+
+        match this
+            .stack_tx
+            .start_send_unpin(packet_to_send)//ip_packet_writer.into_inner().freeze())
+        {
             Ok(()) => Ok(()),
             Err(err) => Err(Error::other(format!("send error: {err}"))),
         }

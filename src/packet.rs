@@ -1,13 +1,23 @@
 use std::net::IpAddr;
 
 use smoltcp::wire::{IpProtocol, IpVersion, Ipv4Packet, Ipv6Packet};
+use tokio_util::bytes::Bytes;
 
-pub type AnyIpPktFrame = Vec<u8>;
+pub type AnyIpPktFrame = Bytes;
 
 #[derive(Debug)]
 pub(super) enum IpPacket<T: AsRef<[u8]>> {
     Ipv4(Ipv4Packet<T>),
     Ipv6(Ipv6Packet<T>),
+}
+
+impl<T: AsRef<[u8]>> IpPacket<T>{
+    pub fn header_len(&self) -> usize{
+        match self {
+            IpPacket::Ipv4(packet) => packet.header_len() as usize,
+            IpPacket::Ipv6(packet) => packet.header_len(),
+        }
+    } 
 }
 
 impl<T: AsRef<[u8]> + Copy> IpPacket<T> {

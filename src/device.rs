@@ -7,22 +7,23 @@ use smoltcp::{
     phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
     time::Instant,
 };
-use tokio::sync::mpsc::{unbounded_channel, Permit, Sender, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{channel, Permit, Sender, Receiver};
+use tokio_util::bytes::{Bytes, BytesMut};
 
 use crate::packet::AnyIpPktFrame;
 
 pub(super) struct VirtualDevice {
     in_buf_avail: Arc<AtomicBool>,
-    in_buf: UnboundedReceiver<Vec<u8>>,
+    in_buf: Receiver<Bytes>,
     out_buf: Sender<AnyIpPktFrame>,
 }
 
 impl VirtualDevice {
     pub(super) fn new(
         iface_egress_tx: Sender<AnyIpPktFrame>,
-    ) -> (Self, UnboundedSender<Vec<u8>>, Arc<AtomicBool>) {
+    ) -> (Self, Sender<Bytes>, Arc<AtomicBool>) {
         let iface_ingress_tx_avail = Arc::new(AtomicBool::new(false));
-        let (iface_ingress_tx, iface_ingress_rx) = unbounded_channel();
+        let (iface_ingress_tx, iface_ingress_rx) = channel(1024);
         (
             Self {
                 in_buf_avail: iface_ingress_tx_avail.clone(),
@@ -69,7 +70,7 @@ impl Device for VirtualDevice {
 }
 
 pub(super) struct VirtualRxToken {
-    buffer: Vec<u8>,
+    buffer: Bytes,
 }
 
 impl RxToken for VirtualRxToken {
@@ -82,7 +83,7 @@ impl RxToken for VirtualRxToken {
 }
 
 pub(super) struct VirtualTxToken<'a> {
-    permit: Permit<'a, Vec<u8>>,
+    permit: Permit<'a, Bytes>,
 }
 
 impl<'a> TxToken for VirtualTxToken<'a> {
@@ -90,9 +91,9 @@ impl<'a> TxToken for VirtualTxToken<'a> {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        let mut buffer = vec![0u8; len];
+        let mut buffer = BytesMut::with_capacity(len);
         let result = f(&mut buffer);
-        self.permit.send(buffer);
+        self.permit.send(buffer.freeze());
         result
     }
 }

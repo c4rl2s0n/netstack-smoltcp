@@ -1,9 +1,10 @@
-use std::net::{IpAddr, SocketAddr};
+use std::{io, net::{IpAddr, SocketAddr}};
 
 use futures::{SinkExt, StreamExt};
 use netstack_smoltcp::{StackBuilder, TcpListener, UdpSocket};
 use structopt::StructOpt;
 use tokio::net::{TcpSocket, TcpStream};
+use tokio_util::{bytes::{Bytes, BytesMut}, codec::{Decoder, Encoder}};
 use tracing::{error, info, warn};
 
 // to run this example, you should set the policy routing **after the start of the main program**
@@ -31,6 +32,31 @@ use tracing::{error, info, warn};
 // `curl 1.1.1.1`
 //
 // currently, the example only supports the TCP stream, and the UDP packet will be dropped.
+
+pub struct TunBytesCodec;
+
+impl Decoder for TunBytesCodec {
+    type Item = Bytes;
+    type Error = io::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        if src.is_empty() {
+            return Ok(None);
+        }
+        // Take the entire buffer and turn it into a frozen Bytes object
+        Ok(Some(src.split().freeze()))
+    }
+}
+
+impl Encoder<Bytes> for TunBytesCodec {
+    type Error = io::Error;
+
+    fn encode(&mut self, item: Bytes, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        // Just put the bytes into the destination buffer for the TUN
+        dst.extend_from_slice(&item);
+        Ok(())
+    }
+}
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "forward", about = "Simply forward tun tcp/udp traffic.")]
@@ -126,7 +152,7 @@ async fn main_exec(opt: Opt) {
         tokio_spawn!(runner);
     }
 
-    let framed = device.into_framed();
+    let framed = tokio_util::codec::Framed::new(device, TunBytesCodec);
     let (mut tun_sink, mut tun_stream) = framed.split();
     let (mut stack_sink, mut stack_stream) = stack.split();
 
@@ -226,10 +252,10 @@ async fn handle_inbound_datagram(udp_socket: UdpSocket, interface: String) {
                     // pipe between two udp sockets
                     let _ = remote_socket.send(&data).await;
                     loop {
-                        let mut buf = vec![0; 1024];
+                        let mut buf = BytesMut::with_capacity(1024);
                         match remote_socket.recv_from(&mut buf).await {
                             Ok((len, _)) => {
-                                let _ = tx.send((buf[..len].to_vec(), local, remote));
+                                let _ = tx.send((buf.freeze().slice(..len), local, remote));
                             }
                             Err(e) => {
                                 warn!(

@@ -22,10 +22,11 @@ use spin::Mutex as SpinMutex;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::{
-        mpsc::{unbounded_channel, Receiver, Sender, UnboundedReceiver, UnboundedSender},
+        mpsc::{channel, Receiver, Sender},
         Notify,
     },
 };
+use tokio_util::bytes::Bytes;
 use tracing::{error, trace};
 
 use crate::{
@@ -69,15 +70,15 @@ impl TcpListenerRunner {
     fn create(
         device: VirtualDevice,
         iface: Interface,
-        iface_ingress_tx: UnboundedSender<Vec<u8>>,
+        iface_ingress_tx: Sender<Bytes>,
         iface_ingress_tx_avail: Arc<AtomicBool>,
         tcp_rx: Receiver<AnyIpPktFrame>,
-        stream_tx: UnboundedSender<TcpStream>,
+        stream_tx: Sender<TcpStream>,
         sockets: HashMap<SocketHandle, SharedControl>,
     ) -> Runner {
         Runner::new(async move {
             let notify = Arc::new(Notify::new());
-            let (socket_tx, socket_rx) = unbounded_channel::<TcpSocketCreation>();
+            let (socket_tx, socket_rx) = channel::<TcpSocketCreation>(1024);
             let res = tokio::select! {
                 v = Self::handle_packet(notify.clone(), iface_ingress_tx, iface_ingress_tx_avail.clone(), tcp_rx, stream_tx, socket_tx) => v,
                 v = Self::handle_socket(notify, device, iface, iface_ingress_tx_avail, sockets, socket_rx) => v,
@@ -90,14 +91,14 @@ impl TcpListenerRunner {
 
     async fn handle_packet(
         notify: SharedNotify,
-        iface_ingress_tx: UnboundedSender<Vec<u8>>,
+        iface_ingress_tx: Sender<Bytes>,
         iface_ingress_tx_avail: Arc<AtomicBool>,
         mut tcp_rx: Receiver<AnyIpPktFrame>,
-        stream_tx: UnboundedSender<TcpStream>,
-        socket_tx: UnboundedSender<TcpSocketCreation>,
+        stream_tx: Sender<TcpStream>,
+        socket_tx: Sender<TcpSocketCreation>,
     ) -> std::io::Result<()> {
         while let Some(frame) = tcp_rx.recv().await {
-            let packet = match IpPacket::new_checked(frame.as_slice()) {
+            let packet = match IpPacket::new_checked(&frame) {
                 Ok(p) => p,
                 Err(err) => {
                     error!("invalid TCP IP packet: {:?}", err,);
@@ -109,6 +110,7 @@ impl TcpListenerRunner {
             if matches!(packet.protocol(), IpProtocol::Icmp | IpProtocol::Icmpv6) {
                 iface_ingress_tx
                     .send(frame)
+                    .await
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
                 iface_ingress_tx_avail.store(true, Ordering::Release);
                 notify.notify_one();
@@ -167,15 +169,18 @@ impl TcpListenerRunner {
                         notify: notify.clone(),
                         control: control.clone(),
                     })
+                    .await
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
                 socket_tx
                     .send(TcpSocketCreation { control, socket })
+                    .await
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
             }
 
             // Pipeline tcp stream packet
             iface_ingress_tx
                 .send(frame)
+                .await
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
             iface_ingress_tx_avail.store(true, Ordering::Release);
             notify.notify_one();
@@ -189,7 +194,7 @@ impl TcpListenerRunner {
         mut iface: Interface,
         iface_ingress_tx_avail: Arc<AtomicBool>,
         mut sockets: HashMap<SocketHandle, SharedControl>,
-        mut socket_rx: UnboundedReceiver<TcpSocketCreation>,
+        mut socket_rx: Receiver<TcpSocketCreation>,
     ) -> std::io::Result<()> {
         let mut socket_set = SocketSet::new(vec![]);
         loop {
@@ -353,7 +358,7 @@ impl TcpListenerRunner {
 }
 
 pub struct TcpListener {
-    stream_rx: UnboundedReceiver<TcpStream>,
+    stream_rx: Receiver<TcpStream>,
 }
 
 impl TcpListener {
@@ -364,7 +369,7 @@ impl TcpListener {
         let (mut device, iface_ingress_tx, iface_ingress_tx_avail) = VirtualDevice::new(stack_tx);
         let iface = Self::create_interface(&mut device)?;
 
-        let (stream_tx, stream_rx) = unbounded_channel();
+        let (stream_tx, stream_rx) = channel(1024);
 
         let runner = TcpListenerRunner::create(
             device,
