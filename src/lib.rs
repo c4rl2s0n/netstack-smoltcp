@@ -18,5 +18,8 @@ pub use tcp::{TcpListener, TcpStream};
 pub mod stack;
 pub use stack::{Stack, StackBuilder};
 
+mod utils;
+pub use utils::BufferPool;
+
 /// Re-export
 pub use smoltcp;

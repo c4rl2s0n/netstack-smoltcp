@@ -13,15 +13,16 @@ use smoltcp::{
     time::Instant,
 };
 use tokio::sync::mpsc::{channel, Permit, Receiver, Sender};
-use tokio_util::bytes::{Bytes, BytesMut};
+use tokio_util::bytes::Bytes;
 
-use crate::packet::AnyIpPktFrame;
+use crate::{packet::AnyIpPktFrame, BufferPool};
 
 pub(super) struct VirtualDevice {
     in_buf_avail: Arc<AtomicBool>,
     in_buf: Receiver<Bytes>,
     out_buf: Sender<AnyIpPktFrame>,
     max_transmission_unit: usize,
+    buffer_pool: BufferPool,
 }
 
 impl VirtualDevice {
@@ -37,6 +38,7 @@ impl VirtualDevice {
                 in_buf: iface_ingress_rx,
                 out_buf: iface_egress_tx,
                 max_transmission_unit,
+                buffer_pool: BufferPool::new(64 * 1024),
             },
             iface_ingress_tx,
             iface_ingress_tx_avail,
@@ -59,12 +61,21 @@ impl Device for VirtualDevice {
             return None;
         };
 
-        Some((Self::RxToken { buffer }, Self::TxToken { permit }))
+        Some((
+            Self::RxToken { buffer },
+            Self::TxToken {
+                permit,
+                buffer_pool: &mut self.buffer_pool,
+            },
+        ))
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
         match self.out_buf.try_reserve() {
-            Ok(permit) => Some(Self::TxToken { permit }),
+            Ok(permit) => Some(Self::TxToken {
+                permit,
+                buffer_pool: &mut self.buffer_pool,
+            }),
             Err(_) => None,
         }
     }
@@ -92,6 +103,7 @@ impl RxToken for VirtualRxToken {
 
 pub(super) struct VirtualTxToken<'a> {
     permit: Permit<'a, Bytes>,
+    buffer_pool: &'a mut BufferPool,
 }
 
 impl<'a> TxToken for VirtualTxToken<'a> {
@@ -99,8 +111,17 @@ impl<'a> TxToken for VirtualTxToken<'a> {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        let mut buffer = BytesMut::with_capacity(len);
+        // let mut buffer = BytesMut::with_capacity(len);
+        // let mut buffer = self.buffer_pool.get_buffer(len); vec![0u8; len]; //BytesMut::with_capacity(len);
+        let mut buffer = self.buffer_pool.get_buffer(len);
+
+        // Assert that the buffer has the capacity to set the length! 
+        // The only "unsafe" thing left is, that the buffer may contain random old data.
+        // This should not be a problem, as it will be overridden directly
+        assert_eq!(buffer.capacity(), len, "The acquired buffer must have the capacity for the required length!");
+        unsafe { buffer.set_len(len) };
         let result = f(&mut buffer);
+        //self.permit.send(Bytes::from(buffer));
         self.permit.send(buffer.freeze());
         result
     }
