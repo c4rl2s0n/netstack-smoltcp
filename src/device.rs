@@ -111,17 +111,8 @@ impl<'a> TxToken for VirtualTxToken<'a> {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        // let mut buffer = BytesMut::with_capacity(len);
-        // let mut buffer = self.buffer_pool.get_buffer(len); vec![0u8; len]; //BytesMut::with_capacity(len);
-        let mut buffer = self.buffer_pool.get_buffer(len);
-
-        // Assert that the buffer has the capacity to set the length! 
-        // The only "unsafe" thing left is, that the buffer may contain random old data.
-        // This should not be a problem, as it will be overridden directly
-        assert_eq!(buffer.capacity(), len, "The acquired buffer must have the capacity for the required length!");
-        unsafe { buffer.set_len(len) };
+        let mut buffer = self.buffer_pool.get_dirty_buffer(len);
         let result = f(&mut buffer);
-        //self.permit.send(Bytes::from(buffer));
         self.permit.send(buffer.freeze());
         result
     }
