@@ -17,7 +17,17 @@ impl BufferPool {
     /// 
     /// WARNING: use this only, if you are sure the buffer will be overridden before reading from it to prevent potentially leaking information!
     pub fn get_dirty_buffer(&mut self, len: usize) -> BytesMut {
-        // If we don't have enough contiguous space, allocate a new "chunk"
+        self.ensure_capacity(len);
+        // Assert that the buffer has the capacity to set the length! 
+        // The only "unsafe" thing left is, that the buffer may contain random old data.
+        // NOTE: we make sure that enough space is actually reserved before, so we set_len to get the buffer, containing potentially dirty memory
+        assert!(self.pool.capacity() >= len, "The acquired buffer must have the capacity for the required length!");
+        unsafe { self.pool.set_len(len) };
+        self.pool.split()
+    }
+
+    /// Allocate a new "chunk", if we don't have enough contiguous space
+    fn ensure_capacity(&mut self, len: usize){
         if self.pool.capacity() < len {
             // Allocate a large chunk to amortize allocation costs
             // If the requested buffer is larger than the whole capacity, allocate that amount of bytes
@@ -25,11 +35,5 @@ impl BufferPool {
              // acquire a new chunk of memory, to avoid growing the pool indefinitely and allow for early free on small chunks
             self.pool = BytesMut::with_capacity(required);
         }
-        // Assert that the buffer has the capacity to set the length! 
-        // The only "unsafe" thing left is, that the buffer may contain random old data.
-        // NOTE: we make sure that enough space is actually reserved before, so we set_len to get the buffer, containing potentially dirty memory
-        assert_eq!(self.pool.capacity(), len, "The acquired buffer must have the capacity for the required length!");
-        unsafe { self.pool.set_len(len) };
-        self.pool.split()
     }
 }

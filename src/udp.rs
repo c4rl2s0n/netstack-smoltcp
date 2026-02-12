@@ -7,19 +7,16 @@ use std::{
 };
 
 use etherparse::PacketBuilder;
-use futures::{Sink, SinkExt, Stream, ready};
+use futures::{ready, Sink, SinkExt, Stream};
 use smoltcp::wire::UdpPacket;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::{
-    bytes::{BufMut, Bytes},
+    bytes::{BufMut, Bytes, BytesMut},
     sync::PollSender,
 };
 use tracing::{error, trace};
 
-use crate::{
-    BufferPool,
-    packet::{AnyIpPktFrame, IpPacket},
-};
+use crate::packet::{AnyIpPktFrame, IpPacket};
 
 pub type UdpMsg = (
     Bytes,      /* payload */
@@ -49,7 +46,7 @@ impl UdpSocket {
             },
             WriteHalf {
                 stack_tx: self.stack_tx,
-                buffer_pool: BufferPool::new(WRITE_POOL_SIZE),
+                buffer_pool: BytesMut::with_capacity(WRITE_POOL_SIZE),
             },
         )
     }
@@ -61,7 +58,7 @@ pub struct ReadHalf {
 
 pub struct WriteHalf {
     stack_tx: PollSender<AnyIpPktFrame>,
-    buffer_pool: BufferPool,
+    buffer_pool: BytesMut,
 }
 
 impl Stream for ReadHalf {
@@ -141,17 +138,20 @@ impl Sink<UdpMsg> for WriteHalf {
         let this = self.get_mut();
         // get the required size for the packet
         let total_size = builder.size(data.len());
-        // Get a dirty buffer that can hold the required capacity
-        let mut packet_buffer = this.buffer_pool.get_dirty_buffer(total_size);
-        let mut ip_packet_writer = (&mut packet_buffer).writer();
+        // Make sure the buffer has enough capacity
+        if this.buffer_pool.capacity() < total_size{
+            this.buffer_pool = BytesMut::with_capacity(std::cmp::max(WRITE_POOL_SIZE, total_size));
+        }
+        let mut ip_packet_writer = (&mut this.buffer_pool).writer();
 
         // write the packet to the buffer
         builder
             .write(&mut ip_packet_writer, &data)
             .map_err(|err| Error::other(format!("PacketBuilder::write: {err}")))?;
 
-        //
-        let packet_to_send = packet_buffer.freeze();
+        // split the packet from the buffer and keep the remaining buffer for future allocations
+        let packet_to_send = this.buffer_pool.split_to(total_size).freeze();
+        log::debug!("Built UDP packet: \n{}", hex::encode(&packet_to_send));
         match this.stack_tx.start_send_unpin(packet_to_send) {
             Ok(()) => Ok(()),
             Err(err) => Err(Error::other(format!("send error: {err}"))),
