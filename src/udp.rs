@@ -151,7 +151,6 @@ impl Sink<UdpMsg> for WriteHalf {
 
         // split the packet from the buffer and keep the remaining buffer for future allocations
         let packet_to_send = this.buffer_pool.split_to(total_size).freeze();
-        log::debug!("Built UDP packet: \n{}", hex::encode(&packet_to_send));
         match this.stack_tx.start_send_unpin(packet_to_send) {
             Ok(()) => Ok(()),
             Err(err) => Err(Error::other(format!("send error: {err}"))),
