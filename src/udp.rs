@@ -1,6 +1,5 @@
-/// Changelog: 
+/// Changelog:
 /// - use Bytes instead of Vec<u8>
-
 use std::{
     net::SocketAddr,
     pin::Pin,
@@ -8,22 +7,27 @@ use std::{
 };
 
 use etherparse::PacketBuilder;
-use futures::{ready, Sink, SinkExt, Stream};
+use futures::{Sink, SinkExt, Stream, ready};
 use smoltcp::wire::UdpPacket;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::{
-    bytes::{BufMut, Bytes, BytesMut},
+    bytes::{BufMut, Bytes},
     sync::PollSender,
 };
 use tracing::{error, trace};
 
-use crate::packet::{AnyIpPktFrame, IpPacket};
+use crate::{
+    BufferPool,
+    packet::{AnyIpPktFrame, IpPacket},
+};
 
 pub type UdpMsg = (
     Bytes,      /* payload */
     SocketAddr, /* local */
     SocketAddr, /* remote */
 );
+
+const WRITE_POOL_SIZE: usize = 32 * 1024;
 
 pub struct UdpSocket {
     udp_rx: Receiver<AnyIpPktFrame>,
@@ -45,7 +49,7 @@ impl UdpSocket {
             },
             WriteHalf {
                 stack_tx: self.stack_tx,
-                scratch_buffer: BytesMut::new(),
+                buffer_pool: BufferPool::new(WRITE_POOL_SIZE),
             },
         )
     }
@@ -57,7 +61,7 @@ pub struct ReadHalf {
 
 pub struct WriteHalf {
     stack_tx: PollSender<AnyIpPktFrame>,
-    scratch_buffer: BytesMut,
+    buffer_pool: BufferPool,
 }
 
 impl Stream for ReadHalf {
@@ -134,30 +138,21 @@ impl Sink<UdpMsg> for WriteHalf {
             }
         };
 
-        
         let this = self.get_mut();
-        // Clear the buffer (doesn't deallocate memory)
-        this.scratch_buffer.clear();
-        
-        // Ensure enough capacity (only reallocates if needed)
+        // get the required size for the packet
         let total_size = builder.size(data.len());
-        if this.scratch_buffer.capacity() < total_size {
-            this.scratch_buffer.reserve(total_size);
-        }
+        // Get a dirty buffer that can hold the required capacity
+        let mut packet_buffer = this.buffer_pool.get_dirty_buffer(total_size);
+        let mut ip_packet_writer = (&mut packet_buffer).writer();
 
-        let mut ip_packet_writer = (&mut this.scratch_buffer).writer();
-
-        //let mut ip_packet_writer = self.scratch_bufferBytesMut::with_capacity(builder.size(data.len())).writer();
+        // write the packet to the buffer
         builder
             .write(&mut ip_packet_writer, &data)
             .map_err(|err| Error::other(format!("PacketBuilder::write: {err}")))?;
 
-        let packet_to_send = this.scratch_buffer.split().freeze();
-
-        match this
-            .stack_tx
-            .start_send_unpin(packet_to_send)
-        {
+        //
+        let packet_to_send = packet_buffer.freeze();
+        match this.stack_tx.start_send_unpin(packet_to_send) {
             Ok(()) => Ok(()),
             Err(err) => Err(Error::other(format!("send error: {err}"))),
         }

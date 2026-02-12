@@ -22,7 +22,8 @@ impl BufferPool {
             // Allocate a large chunk to amortize allocation costs
             // If the requested buffer is larger than the whole capacity, allocate that amount of bytes
             let required = std::cmp::max(self.capacity, len);
-            self.pool.reserve(required);
+             // acquire a new chunk of memory, to avoid growing the pool indefinitely and allow for early free on small chunks
+            self.pool = BytesMut::with_capacity(required);
         }
         // Assert that the buffer has the capacity to set the length! 
         // The only "unsafe" thing left is, that the buffer may contain random old data.
