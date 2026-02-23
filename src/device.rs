@@ -51,12 +51,12 @@ impl Device for VirtualDevice {
     type TxToken<'a> = VirtualTxToken<'a>;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        let Ok(buffer) = self.in_buf.try_recv() else {
+        let Ok(permit) = self.out_buf.try_reserve() else {
             self.in_buf_avail.store(false, Ordering::Release);
             return None;
         };
-
-        let Ok(permit) = self.out_buf.try_reserve() else {
+        
+        let Ok(buffer) = self.in_buf.try_recv() else {
             self.in_buf_avail.store(false, Ordering::Release);
             return None;
         };
