@@ -66,39 +66,44 @@ impl Stream for ReadHalf {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         self.udp_rx.poll_recv(cx).map(|item| {
-            item.and_then(|frame| {
-                let packet = match IpPacket::new_checked(&frame) {
-                    Ok(p) => p,
-                    Err(err) => {
-                        error!("invalid IP packet: {}", err);
-                        return None;
-                    }
-                };
+            let Some(frame) = item else{return None;};
+            
+            // check IP packet
+            let packet = match IpPacket::new_checked(&frame) {
+                Ok(p) => p,
+                Err(err) => {
+                    error!("invalid IP packet: {}", err);
+                    return None;
+                }
+            };
 
-                let src_ip = packet.src_addr();
-                let dst_ip = packet.dst_addr();
-                let payload = packet.payload();
-                let mut payload_offset = packet.header_len();
+            // extract IPs
+            let src_ip = packet.src_addr();
+            let dst_ip = packet.dst_addr();
+            let payload = packet.payload();
+            let mut payload_offset = packet.header_len();
 
-                let packet: UdpPacket<&[u8]> = match UdpPacket::new_checked(payload) {
-                    Ok(p) => p,
-                    Err(err) => {
-                        error!("invalid err: {err}, src_ip: {src_ip}, dst_ip: {dst_ip}, payload: {payload:?}");
-                        return None;
-                    }
-                };
-                let src_port = packet.src_port();
-                let dst_port = packet.dst_port();
+            // check UDP packet
+            let packet: UdpPacket<&[u8]> = match UdpPacket::new_checked(payload) {
+                Ok(p) => p,
+                Err(err) => {
+                    error!("invalid err: {err}, src_ip: {src_ip}, dst_ip: {dst_ip}, payload: {payload:?}");
+                    return None;
+                }
+            };
+            // extract ports
+            let src_port = packet.src_port();
+            let dst_port = packet.dst_port();
 
-                let src_addr = SocketAddr::new(src_ip, src_port);
-                let dst_addr = SocketAddr::new(dst_ip, dst_port);
-                payload_offset += 8;
+            let src_addr = SocketAddr::new(src_ip, src_port);
+            let dst_addr = SocketAddr::new(dst_ip, dst_port);
+            payload_offset += 8;
 
-                trace!("created UDP socket for {} <-> {}", src_addr, dst_addr);
+            // trace!("created UDP packet for {} <-> {}", src_addr, dst_addr);
 
-                let payload = frame.slice(payload_offset..payload_offset + packet.payload().len());
-                Some((payload, src_addr, dst_addr))
-            })
+            let payload = frame.slice(payload_offset..payload_offset + packet.payload().len());
+            Some((payload, src_addr, dst_addr))
+        
         })
     }
 }

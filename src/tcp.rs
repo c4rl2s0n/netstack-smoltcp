@@ -149,7 +149,7 @@ impl TcpListenerRunner {
                 // FIXME: It should follow system's setting. 7200 is Linux's default.
                 socket.set_timeout(Some(Duration::from_secs(7200)));
                 // NO ACK delay
-                // socket.set_ack_delay(None);
+                socket.set_ack_delay(None);
 
                 if let Err(err) = socket.listen(dst_addr) {
                     error!("listen error: {:?}", err);
@@ -214,7 +214,10 @@ impl TcpListenerRunner {
                 updated_sockets,
                 smoltcp::iface::PollResult::SocketStateChanged
             ) {
-                trace!("VirtDevice::poll costed {}", Instant::now() - before_poll);
+                let t = Instant::now() - before_poll;
+                if t > Duration::from_millis(1){
+                    trace!("VirtDevice::poll costed {t}");
+                }
             }
 
             // Check all the sockets' status
